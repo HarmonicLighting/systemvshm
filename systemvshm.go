@@ -101,9 +101,9 @@ func (h *VShmHandler) AttachShm(pathname string) (uintptr, error) {
 	if e != 0 {
 	}
 	h.filename = pathname
-	h.key = uintptr(datashm.Key)
-	h.size = uintptr(datashm.Size)
-	h.shmid = uintptr(datashm.Shmid)
+	h.key = datashm.Key
+	h.size = datashm.Size
+	h.shmid = datashm.Shmid
 	h.ptr = addr
 	h.attached = true
 	return h.ptr, nil

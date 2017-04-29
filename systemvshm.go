@@ -1,11 +1,7 @@
 package shm
 
 //#include <stdlib.h>
-//#include <stdio.h>
 //#include <sys/shm.h>
-//#include <sys/types.h>
-//#include <string.h>
-//#include <stdbool.h>
 import "C"
 import (
 	"encoding/json"
@@ -35,13 +31,19 @@ type VShmHandler struct {
 	ptr      uintptr
 }
 
+// vShmMarshalStr is the var type which stores data for and from JSON
+type vShmMarshalStr struct {
+	Key   uintptr
+	Size  uintptr
+	Shmid uintptr
+}
+
 func ftok(pathname string) (uintptr, error) {
 	cpath := C.CString(pathname)
 	defer C.free(unsafe.Pointer(cpath))
 
 	key, err := C.ftok(cpath, C.int(20))
 	if err != nil {
-		//println("error ftok, key:", key, ", err:", err.Error())
 		return 0, err
 	}
 
@@ -71,9 +73,7 @@ func (h *VShmHandler) CreateShm(pathname string, size uintptr) error {
 		return &errorString{"ftok Error."}
 	}
 	tempShmID, _, er := unix.Syscall(unix.SYS_SHMGET, h.key, size, 01000|0777)
-	println("h.shmid returned:", tempShmID)
 	if er != 0 {
-		println("Error on syscall-shmget", ", err:", err.Error())
 		return err
 	}
 	h.shmid = tempShmID
@@ -121,12 +121,6 @@ func (h *VShmHandler) DetachShm() error {
 	h.attached = false
 	h.ptr = 0
 	return nil
-}
-
-type vShmMarshalStr struct {
-	Key   uintptr
-	Size  uintptr
-	Shmid uintptr
 }
 
 // NewVShmHandler returns a VShmHandler

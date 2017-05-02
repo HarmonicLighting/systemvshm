@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"os"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -23,26 +24,30 @@ func (e *errorString) Error() string {
 
 // VShmHandler Handles the System V shm calls
 type VShmHandler struct {
-	attached bool
-	filename string
-	key      uintptr
-	size     uintptr
-	shmid    uintptr
-	ptr      uintptr
+	attached    bool
+	filename    string
+	permissions uintptr
+	projectid   int
+	size        uintptr
+	key         uintptr
+	shmid       uintptr
+	ptr         uintptr
 }
 
 // vShmMarshalStr is the var type which stores data for and from JSON
 type vShmMarshalStr struct {
-	Key   uintptr
-	Size  uintptr
-	Shmid uintptr
+	Permissions uintptr
+	Projectid   int
+	Size        uintptr
+	Key         uintptr
+	Shmid       uintptr
 }
 
-func ftok(pathname string) (uintptr, error) {
+func ftok(pathname string, projectID int) (uintptr, error) {
 	cpath := C.CString(pathname)
 	defer C.free(unsafe.Pointer(cpath))
 
-	key, err := C.ftok(cpath, C.int(20))
+	key, err := C.ftok(cpath, C.int(projectID))
 	if err != nil {
 		return 0, err
 	}
@@ -52,37 +57,43 @@ func ftok(pathname string) (uintptr, error) {
 
 // ToString generates a string representing the inner status of the object.
 func (h *VShmHandler) ToString() string {
-	return fmt.Sprintf("{attached: %v,filename: %v, key: %v, size:%v, shmid: %v, ptr: %v}", h.attached, h.filename, h.key, h.size, h.shmid, h.ptr)
+	return fmt.Sprintf("{\tattached: %v\n\tfilename: %v\n\tpermissions: %o\n\tprojectid: %v\n\tsize:%v\n\tkey: 0x%x\n\tshmid: %v\n\tptr: %v\n}", h.attached, h.filename, h.permissions, h.projectid, h.size, h.key, h.shmid, h.ptr)
 }
 
 // CreateShm creates a struct VShmHandler
-func (h *VShmHandler) CreateShm(pathname string, size uintptr) error {
+func (h *VShmHandler) CreateShm(pathname string, size uintptr, permissionsMask uintptr, projectID int) error {
 	if h.attached {
 		return &errorString{"This handler is already attached."}
 	}
 	if size < 1 {
 		return &errorString{"The size is invalid."}
 	}
+	h.filename = pathname
+	h.permissions = permissionsMask & 0666
+	h.projectid = projectID
+	h.size = size
 	var err error
-	err = generateShmJSONFile(pathname, 1, size, 1)
+
+	err = generateEmptyFile(pathname)
 	if err != nil {
 		return err
 	}
-	h.key, err = ftok(pathname)
+
+	h.key, err = ftok(pathname, h.projectid)
 	if err != nil {
 		return &errorString{"ftok Error."}
 	}
-	tempShmID, _, er := unix.Syscall(unix.SYS_SHMGET, h.key, size, 01000|0777)
+
+	tempSHMID, _, er := unix.Syscall(unix.SYS_SHMGET, h.key, h.size, 01000|h.permissions)
 	if er != 0 {
 		return err
 	}
-	h.shmid = tempShmID
-	h.size = size
-	err = generateShmJSONFile(pathname, h.key, size, h.shmid)
+	h.shmid = tempSHMID
+
+	err = h.generateShmJSONFile()
 	if err != nil {
 		return err
 	}
-	h.filename = pathname
 	return nil
 }
 
@@ -101,8 +112,10 @@ func (h *VShmHandler) AttachShm(pathname string) (uintptr, error) {
 	if e != 0 {
 	}
 	h.filename = pathname
-	h.key = datashm.Key
+	h.permissions = datashm.Permissions
+	h.projectid = datashm.Projectid
 	h.size = datashm.Size
+	h.key = datashm.Key
 	h.shmid = datashm.Shmid
 	h.ptr = addr
 	h.attached = true
@@ -114,8 +127,8 @@ func (h *VShmHandler) DetachShm() error {
 	if !h.attached {
 		return &errorString{"Couldn't detach. This handler wasn't attached."}
 	}
-	addr, _, err := unix.Syscall(unix.SYS_SHMDT, h.ptr, 0, 0)
-	if addr != 0 {
+	ret, _, err := unix.Syscall(unix.SYS_SHMDT, h.ptr, 0, 0)
+	if ret != 0 {
 		return err
 	}
 	h.attached = false
@@ -125,29 +138,36 @@ func (h *VShmHandler) DetachShm() error {
 
 // NewVShmHandler returns a VShmHandler
 func NewVShmHandler() *VShmHandler {
-	return &VShmHandler{false, "", 0, 0, 0, 0}
+	return &VShmHandler{false, "", 0, 0, 0, 0, 0, 0}
 }
 
-func generateShmJSONFile(pathname string, key, size, shmid uintptr) error {
-	if key < 0 {
-		return &errorString{"Invalid key"}
+func (h *VShmHandler) generateShmJSONFile() error {
+
+	info := &vShmMarshalStr{
+		Permissions: h.permissions,
+		Projectid:   h.projectid,
+		Size:        h.size,
+		Key:         h.key,
+		Shmid:       h.shmid,
 	}
-	if size < 1 {
-		return &errorString{"Invalid Size"}
-	}
-	if shmid < 0 {
-		return &errorString{"Invalid SHMID"}
-	}
-	info := &vShmMarshalStr{key, size, shmid}
 
 	bytes, ok := json.Marshal(info)
 	if ok != nil {
 		return ok
 	}
-	err := ioutil.WriteFile(pathname, bytes, 0777)
+	err := ioutil.WriteFile(h.filename, bytes, os.FileMode(h.permissions))
 	if err != nil {
 		return err
 	}
+	return nil
+}
+
+func generateEmptyFile(pathname string) error {
+	newFile, err := os.Create(pathname)
+	if err != nil {
+		return err
+	}
+	newFile.Close()
 	return nil
 }
 
